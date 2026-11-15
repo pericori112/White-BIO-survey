@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>발표 화면</title>
+<style>
+  :root { --bg:#0f1713; --card:#1a251e; --ink:#eaf3ed; --mute:#98aa9e; --accent:#5cc58a; --line:#2b3a31; --warn:#e0a040; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif; }
+  main { max-width:1200px; margin:0 auto; padding:28px 32px; }
+  header { display:flex; justify-content:space-between; align-items:center; gap:24px; flex-wrap:wrap; }
+  h1 { margin:0; font-size:2rem; }
+  .qr { background:#fff; padding:10px; border-radius:12px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:18px; margin-top:22px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:22px; }
+  .label { color:var(--mute); font-size:1.05rem; }
+  .num { font-size:4rem; font-weight:800; line-height:1.1; font-variant-numeric:tabular-nums; }
+  .num.accent { color:var(--accent); }
+  .unit { font-size:1.3rem; color:var(--mute); margin-left:6px; font-weight:500; }
+  .items { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; margin-top:18px; }
+  .items .card .num { font-size:2.4rem; }
+  .bar { height:26px; border-radius:8px; background:var(--accent); margin:8px 0 4px; transition:width .6s; }
+  .bar.conv { background:#8a9a90; }
+  .hide { display:none; }
+  .controls { margin-top:26px; display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
+  button { height:48px; padding:0 22px; border:0; border-radius:12px; font-size:1.05rem; font-weight:600; background:var(--accent); color:#06210f; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--mute); border:1px solid var(--line); }
+  .note { color:var(--warn); margin-top:14px; font-size:.95rem; }
+  .small { color:var(--mute); font-size:.9rem; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>우리가 쓰는 일회용품, 얼마나 될까?</h1>
+      <div class="small" id="modeInfo"></div>
+    </div>
+    <div class="qr"><div id="qrcode"></div></div>
+  </header>
+
+  <div class="grid">
+    <div class="card"><div class="label">참여 인원</div><div class="num accent"><span id="n">0</span><span class="unit">명</span></div></div>
+    <div class="card"><div class="label">일주일 일회용품 합계</div><div class="num"><span id="pieces">0</span><span class="unit">개</span></div></div>
+    <div class="card"><div class="label">플라스틱 무게 (일주일)</div><div class="num"><span id="kg">0</span><span class="unit">kg</span></div></div>
+    <div class="card"><div class="label">한 학기 환산 탄소 (일반 플라스틱)</div><div class="num accent"><span id="co2">0</span><span class="unit">kg CO₂e</span></div></div>
+  </div>
+
+  <div class="items" id="items"></div>
+
+  <section id="revealSection" class="hide">
+    <div class="grid">
+      <div class="card" style="grid-column:1/-1">
+        <div class="label">이 자리의 모두가 바이오 소재로 바꾸면 (한 학기)</div>
+        <div id="cmpBars"></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="note hide" id="placeholderNote">※ 현재 수치는 임시값입니다. calc.js의 근거 수치로 교체하세요.</div>
+
+  <div class="controls">
+    <button id="revealBtn">결과 공개 ▶</button>
+    <button class="ghost" id="hideBtn">다시 숨기기</button>
+    <button class="ghost" id="demoBtn">예시 데이터(백업)</button>
+    <button class="ghost" id="resetBtn">전체 초기화</button>
+  </div>
+</main>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="firebase-config.js"></script>
+<script src="calc.js"></script>
+<script src="db.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const fmt = (n, d = 0) => Number(n).toLocaleString("ko-KR", { maximumFractionDigits: d });
+
+$("modeInfo").textContent = Backend.mode === "firebase" ? "● 실시간 연결됨 (Firebase)" : "● 로컬 테스트 모드 (같은 브라우저 탭끼리만 연동)";
+$("placeholderNote").classList.toggle("hide", !PLACEHOLDER);
+
+// QR: 이 페이지와 같은 폴더의 index.html 주소
+const inputUrl = new URL("index.html", location.href).href;
+try { new QRCode($("qrcode"), { text: inputUrl, width: 140, height: 140 }); }
+catch (e) { $("qrcode").textContent = inputUrl; }
+
+// 항목별 카드
+ITEMS.forEach(it => {
+  const d = document.createElement("div");
+  d.className = "card";
+  d.innerHTML = `<div class="label">${it.label}</div><div class="num"><span id="it_${it.key}">0</span><span class="unit">개</span></div>`;
+  $("items").appendChild(d);
+});
+
+let demoRows = null;
+let liveRows = [];
+
+function render() {
+  const rows = demoRows || liveRows;
+  const total = sumCounts(rows);
+  const pieces = ITEMS.reduce((s, it) => s + total[it.key], 0);
+  const wk = footprint(total, "conventional", 1);
+  const sem = footprint(total, "conventional", WEEKS_PER_SEMESTER);
+
+  $("n").textContent = fmt(rows.length);
+  $("pieces").textContent = fmt(pieces);
+  $("kg").textContent = fmt(wk.plasticKg, 2);
+  $("co2").textContent = fmt(sem.co2Kg, 1);
+  ITEMS.forEach(it => $("it_" + it.key).textContent = fmt(total[it.key]));
+
+  // 공개 후 비교 막대
+  const mats = ["conventional", "pla", "pha"].map(k => ({ k, f: footprint(total, k, WEEKS_PER_SEMESTER) }));
+  const max = Math.max(...mats.map(m => m.f.co2Kg), 0.0001);
+  $("cmpBars").innerHTML = mats.map(m =>
+    `<div style="margin-top:14px"><b>${MATERIALS[m.k].name}</b> — 탄소 ${fmt(m.f.co2Kg, 1)} kg CO₂e · 비용 ${fmt(m.f.cost)}원
+     <div class="bar ${m.k === "conventional" ? "conv" : ""}" style="width:${Math.max(2, m.f.co2Kg / max * 100)}%"></div></div>`).join("");
+}
+
+Backend.onResponses(rows => { liveRows = rows; render(); });
+Backend.onRevealed(v => $("revealSection").classList.toggle("hide", !v));
+
+$("revealBtn").onclick = () => Backend.setRevealed(true);
+$("hideBtn").onclick = () => Backend.setRevealed(false);
+$("resetBtn").onclick = () => { if (confirm("응답을 모두 지우고 초기화할까요?")) { demoRows = null; Backend.reset(); } };
+$("demoBtn").onclick = () => {
+  // 인터넷/입력 문제 시 백업: 미리 만든 예시 응답 30명
+  if (demoRows) { demoRows = null; render(); return; }
+  demoRows = Array.from({ length: 30 }, () => ({
+    cups: Math.floor(Math.random() * 8), containers: Math.floor(Math.random() * 6),
+    bags: Math.floor(Math.random() * 5), straws: Math.floor(Math.random() * 6),
+  }));
+  render();
+};
+render();
+</script>
+</body>
+</html>

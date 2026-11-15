@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>나의 일회용품 발자국</title>
+<style>
+  :root { --bg:#f6f8f5; --card:#fff; --ink:#1c2a22; --mute:#6b7a70; --accent:#2f7d52; --line:#dfe6e0; --warn:#b26a00; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#121a15; --card:#1b261f; --ink:#e8f0ea; --mute:#93a498; --accent:#5cc58a; --line:#2c3a31; --warn:#e0a040; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif; }
+  main { max-width:480px; margin:0 auto; padding:20px 16px 48px; }
+  h1 { font-size:1.35rem; margin:8px 0 4px; }
+  p.sub { color:var(--mute); margin:0 0 16px; font-size:.95rem; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; margin-bottom:14px; }
+  .row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 0; border-bottom:1px solid var(--line); }
+  .row:last-child { border-bottom:0; }
+  .row label { font-size:1rem; }
+  .stepper { display:flex; align-items:center; gap:8px; }
+  .stepper button { width:44px; height:44px; border-radius:50%; border:1px solid var(--line); background:var(--bg); color:var(--ink); font-size:1.4rem; }
+  .stepper input { width:56px; height:44px; text-align:center; font-size:1.1rem; border:1px solid var(--line); border-radius:10px; background:var(--card); color:var(--ink); }
+  .primary { width:100%; height:52px; border:0; border-radius:12px; background:var(--accent); color:#fff; font-size:1.05rem; font-weight:600; }
+  .primary:disabled { opacity:.5; }
+  .big { font-size:2rem; font-weight:700; }
+  .mute { color:var(--mute); font-size:.9rem; }
+  .warn { color:var(--warn); font-size:.82rem; margin-top:8px; }
+  .cmp { display:flex; justify-content:space-between; padding:6px 0; }
+  .hide { display:none; }
+  .good { color:var(--accent); font-weight:600; }
+</style>
+</head>
+<body>
+<main>
+  <section id="inputView">
+    <h1>나의 일회용품 발자국</h1>
+    <p class="sub">지난 일주일 동안 쓴 개수를 입력해주세요. (30초면 끝나요)</p>
+    <div class="card" id="fields"></div>
+    <button class="primary" id="submitBtn">제출하기</button>
+    <p class="mute" id="msg"></p>
+  </section>
+
+  <section id="waitView" class="hide">
+    <div class="card" style="text-align:center">
+      <div class="big">제출 완료 ✅</div>
+      <p class="sub">발표 화면을 봐주세요.<br>결과가 공개되면 이 화면에 내 결과가 나타나요.</p>
+    </div>
+  </section>
+
+  <section id="resultView" class="hide">
+    <h1>내 결과</h1>
+    <div class="card">
+      <div class="mute">내가 일주일에 쓰는 일회용품이 만든 탄소</div>
+      <div class="big" id="myCo2">-</div>
+      <div class="mute" id="myPlastic"></div>
+    </div>
+    <div class="card">
+      <div class="mute">같은 양을 바이오 소재로 바꾸면 (일주일 기준)</div>
+      <div id="cmp"></div>
+    </div>
+    <div class="card">
+      <div class="mute">한 학기(16주)로 환산하면</div>
+      <div id="semester"></div>
+    </div>
+    <p class="warn hide" id="placeholderNote">※ 현재 수치는 임시값입니다.</p>
+    <p class="mute">단순화한 추정값이며, 원료·생산 방식에 따라 실제 결과는 달라질 수 있어요.</p>
+  </section>
+
+  <button class="primary hide" id="againBtn" style="margin-top:12px">다시 입력 (테스트 모드)</button>
+</main>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script src="firebase-config.js"></script>
+<script src="calc.js"></script>
+<script src="db.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const fmt = (n, d = 1) => Number(n).toLocaleString("ko-KR", { maximumFractionDigits: d });
+const SUBMITTED_KEY = "wb_my_counts";
+// 주소 뒤에 ?test=1 을 붙이면 테스트 모드: 한 기기에서 여러 번 제출 가능
+const TEST_MODE = new URLSearchParams(location.search).get("test") === "1";
+let epoch = null;      // 서버의 초기화 번호 (초기화하면 바뀜)
+let memSaved = null;   // 제출 기록 (저장소가 막힌 브라우저 대비 메모리에도 보관)
+let testSaved = null;
+
+// 입력칸 만들기
+ITEMS.forEach(it => {
+  const row = document.createElement("div");
+  row.className = "row";
+  row.innerHTML = `<label for="f_${it.key}">${it.label}</label>
+    <div class="stepper">
+      <button type="button" data-k="${it.key}" data-d="-1" aria-label="${it.label} 줄이기">−</button>
+      <input id="f_${it.key}" type="number" inputmode="numeric" min="0" max="${MAX_PER_ITEM}" value="0">
+      <button type="button" data-k="${it.key}" data-d="1" aria-label="${it.label} 늘리기">+</button>
+    </div>`;
+  $("fields").appendChild(row);
+});
+$("fields").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  const inp = $("f_" + b.dataset.k);
+  inp.value = clampCount(Number(inp.value) + Number(b.dataset.d));
+});
+
+function readCounts() {
+  const c = {};
+  ITEMS.forEach(it => c[it.key] = clampCount($("f_" + it.key).value));
+  return c;
+}
+
+function loadSaved() {
+  if (memSaved) return memSaved;
+  try { return JSON.parse(localStorage.getItem(SUBMITTED_KEY)); } catch (e) { return null; }
+}
+
+// 제출 기록이 있고, 그 이후 초기화가 없었을 때만 '제출함'으로 인정
+function mySaved() {
+  if (TEST_MODE) return testSaved;
+  const s = loadSaved();
+  return s && s.counts && (epoch === null || s.epoch === epoch) ? s.counts : null;
+}
+
+function showView(name) {
+  ["inputView", "waitView", "resultView"].forEach(v => $(v).classList.toggle("hide", v !== name));
+}
+
+function renderResult(counts) {
+  const conv = footprint(counts, "conventional");
+  $("myCo2").textContent = fmt(conv.co2Kg, 2) + " kg CO₂e";
+  $("myPlastic").textContent = `플라스틱 약 ${fmt(conv.plasticKg * 1000, 0)} g (${MATERIALS.conventional.name} 기준)`;
+
+  $("cmp").innerHTML = ["pla", "pha"].map(k => {
+    const f = footprint(counts, k);
+    const dCo2 = conv.co2Kg - f.co2Kg, dCost = f.cost - conv.cost;
+    return `<div class="cmp"><b>${MATERIALS[k].name}</b>
+      <span><span class="good">탄소 ${dCo2 >= 0 ? "−" : "+"}${fmt(Math.abs(dCo2), 2)} kg</span> · 비용 ${dCost >= 0 ? "+" : "−"}${fmt(Math.abs(dCost), 0)}원</span></div>`;
+  }).join("");
+
+  const sConv = footprint(counts, "conventional", WEEKS_PER_SEMESTER);
+  const sPla = footprint(counts, "pla", WEEKS_PER_SEMESTER);
+  $("semester").innerHTML =
+    `<div class="cmp"><span>지금 방식</span><b>${fmt(sConv.co2Kg, 1)} kg CO₂e</b></div>
+     <div class="cmp"><span>PLA로 바꾸면</span><b>${fmt(sPla.co2Kg, 1)} kg CO₂e</b></div>`;
+  $("placeholderNote").classList.toggle("hide", !PLACEHOLDER);
+}
+
+let revealed = false;
+function refresh() {
+  const saved = mySaved();
+  $("againBtn").classList.toggle("hide", !(TEST_MODE && saved));
+  if (!saved) return showView("inputView");
+  if (revealed) { renderResult(saved); showView("resultView"); }
+  else showView("waitView");
+}
+
+$("submitBtn").addEventListener("click", async () => {
+  if (mySaved()) { $("msg").textContent = "이미 제출했어요."; return; }
+  const counts = readCounts();
+  if (ITEMS.every(it => counts[it.key] === 0) && !confirm("모두 0개인데 제출할까요?")) return;
+  $("submitBtn").disabled = true;
+  try {
+    await Backend.submit(counts);
+    if (TEST_MODE) testSaved = counts;
+    else {
+      memSaved = { counts, epoch: epoch === null ? 0 : epoch };
+      try { localStorage.setItem(SUBMITTED_KEY, JSON.stringify(memSaved)); } catch (e) {} // 같은 기기 중복 제출 방지
+    }
+    $("submitBtn").disabled = false;
+    refresh();
+  } catch (e) {
+    $("submitBtn").disabled = false;
+    $("msg").textContent = "제출에 실패했어요. 네트워크를 확인하고 다시 눌러주세요.";
+  }
+});
+
+$("againBtn").onclick = () => { testSaved = null; refresh(); };
+Backend.onEpoch(v => { epoch = v; refresh(); });
+Backend.onRevealed(v => { revealed = v; refresh(); });
+refresh();
+</script>
+</body>
+</html>
